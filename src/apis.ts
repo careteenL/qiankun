@@ -19,27 +19,31 @@ const defaultUrlRerouteOnly = true;
 const frameworkStartedDefer = new Deferred<void>();
 
 export function registerMicroApps<T extends ObjectType>(
-  apps: Array<RegistrableApp<T>>,
-  lifeCycles?: FrameworkLifeCycles<T>,
+  apps: Array<RegistrableApp<T>>, // 需要注册的应用
+  lifeCycles?: FrameworkLifeCycles<T>, // 对应的生命周期
 ) {
-  // Each app only needs to be registered once
+  // 过滤注册重复的应用
   const unregisteredApps = apps.filter((app) => !microApps.some((registeredApp) => registeredApp.name === app.name));
 
   microApps = [...microApps, ...unregisteredApps];
 
+  // 将需要注册的新应用，循环依次注册
   unregisteredApps.forEach((app) => {
     const { name, activeRule, loader = noop, props, ...appConfig } = app;
 
+    // 实际还是调用 single-spa 的注册函数
     registerApplication({
       name,
       app: async () => {
-        loader(true);
-        await frameworkStartedDefer.promise;
+        loader(true); // 设置 loading
+        await frameworkStartedDefer.promise; // 等待 start 方法被调用
 
         const { mount, ...otherMicroAppConfigs } = (
+          // 加载应用，获取生命周期钩子
           await loadApp({ name, props, ...appConfig }, frameworkConfiguration, lifeCycles)
         )();
 
+        // 调用 mount 
         return {
           mount: [async () => loader(true), ...toArray(mount), async () => loader(false)],
           ...otherMicroAppConfigs,
@@ -181,6 +185,9 @@ export function loadMicroApp<T extends ObjectType>(
 }
 
 export function start(opts: FrameworkConfiguration = {}) {
+  // prefetch 是否支持预加载
+  // singular 是否支持单例模式
+  // sandbox 是否支持沙箱
   frameworkConfiguration = { prefetch: true, singular: true, sandbox: true, ...opts };
   const {
     prefetch,
@@ -190,14 +197,17 @@ export function start(opts: FrameworkConfiguration = {}) {
     ...importEntryOpts
   } = frameworkConfiguration;
 
-  if (prefetch) {
+  if (prefetch) { // 预加载策略
     doPrefetchStrategy(microApps, prefetch, importEntryOpts);
   }
 
+  // 开启沙箱
   if (sandbox) {
+    // 如果不支持 Proxy 则降级到快照沙箱 loose 表示使用快照沙箱
     if (!window.Proxy) {
       console.warn('[qiankun] Miss window.Proxy, proxySandbox will degenerate into snapshotSandbox');
       frameworkConfiguration.sandbox = typeof sandbox === 'object' ? { ...sandbox, loose: true } : { loose: true };
+      // Proxy 下若为非单例模式 则会报错
       if (!singular) {
         console.warn(
           '[qiankun] Setting singular as false may cause unexpected behavior while your browser not support window.Proxy',
@@ -206,8 +216,10 @@ export function start(opts: FrameworkConfiguration = {}) {
     }
   }
 
+  // 启动应用，最终实际调用 single spa 的 start 方法
   startSingleSpa({ urlRerouteOnly });
   started = true;
 
+  // 启动后，将 promise 状态改为成功态
   frameworkStartedDefer.resolve();
 }

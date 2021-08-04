@@ -69,8 +69,10 @@ function prefetch(entry: Entry, opts?: ImportEntryOpts): void {
     // Don't prefetch if in a slow network or offline
     return;
   }
-
+  // 使用 requestIdleCallback 在浏览器空闲时间进行预加载
   requestIdleCallback(async () => {
+    // 使用 import-html-entry 进行加载资源
+    // 其内部实现 是通过 fetch 去加载资源
     const { getExternalScripts, getExternalStyleSheets } = await importEntry(entry, opts);
     requestIdleCallback(getExternalStyleSheets);
     requestIdleCallback(getExternalScripts);
@@ -78,16 +80,18 @@ function prefetch(entry: Entry, opts?: ImportEntryOpts): void {
 }
 
 function prefetchAfterFirstMounted(apps: AppMetadata[], opts?: ImportEntryOpts): void {
+  // 监听第一个应用的
   window.addEventListener('single-spa:first-mount', function listener() {
+    // 过滤所有没加载的 app
     const notLoadedApps = apps.filter((app) => getAppStatus(app.name) === NOT_LOADED);
 
     if (process.env.NODE_ENV === 'development') {
       const mountedApps = getMountedApps();
       console.log(`[qiankun] prefetch starting after ${mountedApps} mounted...`, notLoadedApps);
     }
-
+    // 没加载的 app 全部需要预加载
     notLoadedApps.forEach(({ entry }) => prefetch(entry, opts));
-
+    // 移除监听的事件
     window.removeEventListener('single-spa:first-mount', listener);
   });
 }

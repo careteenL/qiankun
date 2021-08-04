@@ -246,6 +246,7 @@ export async function loadApp<T extends ObjectType>(
   configuration: FrameworkConfiguration = {},
   lifeCycles?: FrameworkLifeCycles<T>,
 ): Promise<ParcelConfigObjectGetter> {
+  // 获取要加载的应用和应用的名字
   const { entry, name: appName } = app;
   const appInstanceId = `${appName}_${+new Date()}_${Math.floor(Math.random() * 1000)}`;
 
@@ -256,28 +257,36 @@ export async function loadApp<T extends ObjectType>(
 
   const { singular = false, sandbox = true, excludeAssetFilter, ...importEntryOpts } = configuration;
 
-  // get the entry html content and script executor
+  // 通过路径获取 html 并解析为 template execScripts assetPublicPath
+  // template: 模板 html
+  // execScripts: 要执行的脚本，可以在里面添加沙箱
+  // assetPublicPath: 子应用的 publicPath
   const { template, execScripts, assetPublicPath } = await importEntry(entry, importEntryOpts);
 
   // as single-spa load and bootstrap new app parallel with other apps unmounting
   // (see https://github.com/CanopyTax/single-spa/blob/master/src/navigation/reroute.js#L74)
   // we need wait to load the app until all apps are finishing unmount in singular mode
+  // 等待所有应用卸载完毕，再进行挂载
   if (await validateSingularMode(singular, app)) {
     await (prevAppUnmountedDeferred && prevAppUnmountedDeferred.promise);
   }
-
+  // 将模板内容外面 包裹一个 div
   const appContent = getDefaultTplWrapper(appInstanceId, appName)(template);
-
+  // 样式隔离，采用的沙箱方式
+  // 如果设置 strictStyleIsolation 则采用 shadowDom 方式隔离
   const strictStyleIsolation = typeof sandbox === 'object' && !!sandbox.strictStyleIsolation;
+  // 如果设置 experimentalStyleIsolation 则采用 作用域 方式隔离
   const scopedCSS = isEnableScopedCSS(sandbox);
+  // 创建采用具体样式隔离方案的样式
   let initialAppWrapperElement: HTMLElement | null = createElement(
     appContent,
     strictStyleIsolation,
     scopedCSS,
     appName,
   );
-
+  // 初始化容器
   const initialContainer = 'container' in app ? app.container : undefined;
+  // 遗留的 render 方法
   const legacyRender = 'render' in app ? app.render : undefined;
 
   const render = getRender(appName, appContent, legacyRender);
@@ -285,7 +294,7 @@ export async function loadApp<T extends ObjectType>(
   // 第一次加载设置应用可见区域 dom 结构
   // 确保每次应用加载前容器 dom 结构已经设置完毕
   render({ element: initialAppWrapperElement, loading: true, container: initialContainer }, 'loading');
-
+  // 获取包裹容器，可能是 shadowDom
   const initialAppWrapperGetter = getAppWrapperGetter(
     appName,
     appInstanceId,
@@ -300,7 +309,9 @@ export async function loadApp<T extends ObjectType>(
   let unmountSandbox = () => Promise.resolve();
   const useLooseSandbox = typeof sandbox === 'object' && !!sandbox.loose;
   let sandboxContainer;
+  // 开启沙箱
   if (sandbox) {
+    // 创建沙箱容器
     sandboxContainer = createSandboxContainer(
       appName,
       // FIXME should use a strict sandbox logic while remount, see https://github.com/umijs/qiankun/issues/518
@@ -315,6 +326,7 @@ export async function loadApp<T extends ObjectType>(
     unmountSandbox = sandboxContainer.unmount;
   }
 
+  // 为 qiankun 的钩子增加属性
   const {
     beforeUnmount = [],
     afterUnmount = [],
@@ -322,18 +334,20 @@ export async function loadApp<T extends ObjectType>(
     beforeMount = [],
     beforeLoad = [],
   } = mergeWith({}, getAddOns(global, assetPublicPath), lifeCycles, (v1, v2) => concat(v1 ?? [], v2 ?? []));
-
+  // 执行 beforeLoad 方法，妆花为链式
   await execHooksChain(toArray(beforeLoad), app, global);
 
   // get the lifecycle hooks from module exports
+  // 在沙箱中执行脚本指定上下文
   const scriptExports: any = await execScripts(global, sandbox && !useLooseSandbox);
+  // 获得子应用的生命周期
   const { bootstrap, mount, unmount, update } = getLifecyclesFromExports(
     scriptExports,
     appName,
     global,
     sandboxContainer?.instance?.latestSetProp,
   );
-
+  // 绑定事件监听功能
   const { onGlobalStateChange, setGlobalState, offGlobalStateChange }: Record<string, CallableFunction> =
     getMicroAppStateActions(appInstanceId);
 
@@ -357,6 +371,7 @@ export async function loadApp<T extends ObjectType>(
             }
           }
         },
+        // 单例模式时 只能挂载一个应用
         async () => {
           if ((await validateSingularMode(singular, app)) && prevAppUnmountedDeferred) {
             return prevAppUnmountedDeferred.promise;
@@ -388,12 +403,16 @@ export async function loadApp<T extends ObjectType>(
 
           render({ element: appWrapperElement, loading: true, container: remountContainer }, 'mounting');
         },
+        // 挂载沙箱
         mountSandbox,
         // exec the chain after rendering to keep the behavior with beforeLoad
+        // 执行 beforeMount 链式调用
         async () => execHooksChain(toArray(beforeMount), app, global),
         async (props) => mount({ ...props, container: appWrapperGetter(), setGlobalState, onGlobalStateChange }),
         // finish loading after app mounted
+        // 挂载完毕后将 loading 设置为 false
         async () => render({ element: appWrapperElement, loading: false, container: remountContainer }, 'mounted'),
+        // 执行 afterMount
         async () => execHooksChain(toArray(afterMount), app, global),
         // initialize the unmount defer after app mounted and resolve the defer after it unmounted
         async () => {
@@ -409,15 +428,22 @@ export async function loadApp<T extends ObjectType>(
         },
       ],
       unmount: [
+        // 执行 beforeUnmount
         async () => execHooksChain(toArray(beforeUnmount), app, global),
+        // 调用 unmount
         async (props) => unmount({ ...props, container: appWrapperGetter() }),
+        // 卸载沙箱
         unmountSandbox,
+        // 执行 afterUnmount
         async () => execHooksChain(toArray(afterUnmount), app, global),
         async () => {
+          // 卸载完毕
           render({ element: null, loading: false, container: remountContainer }, 'unmounted');
+          // 关闭全局监听事件
           offGlobalStateChange(appInstanceId);
           // for gc
           appWrapperElement = null;
+          // 单例卸载后，可以挂另一个
           syncAppWrapperElement2Sandbox(appWrapperElement);
         },
         async () => {
@@ -427,7 +453,7 @@ export async function loadApp<T extends ObjectType>(
         },
       ],
     };
-
+    // 添加一个 update 方法
     if (typeof update === 'function') {
       parcelConfig.update = update;
     }
